@@ -1,0 +1,2 @@
+javac  -extdirs . cstop.java 
+java  -cp picard-1.33.jar:sam-1.33.jar:.  cstop I= snp.bam O=tyt | less
