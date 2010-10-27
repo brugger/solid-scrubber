@@ -68,12 +68,11 @@ sub analyse {
   my $region = "$chr:$start-$end";
 
   
+  
 
   open (my $bam, "samtools view $bam_file $region | ") || die "Could not open 'stream': $!\n";
 
   my @res;
-
-
 
   while(<$bam>) {
 
