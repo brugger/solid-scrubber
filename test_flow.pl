@@ -12,19 +12,25 @@ use warnings;
 
 my $bam_file = shift;
 
+my $chr_file = "chrX_hg18.fa";
+$chr_file    = 'chrX.fa';
+my ($chr, $seq) = readfasta( $chr_file );
+
+
 my (@cs_splits, @ref_ids, @reads, @SNPs);
 
 my $CS_PRE_POS     = 1;
 my $CS_PRE_PRE_POS = 0;
-my $MIN_SPLIT      = 30; # should be something like 10-15...
+my $MIN_SPLIT      = 20; # should be something like 10-15...
 
-#this should be > readlength + the maximum number of expected inserts. 1-2xreadlength should do the trick
-my $FILTER_BUFFER  = 50;
+#this should be > readlength + the maximum number of expected inserts. 2xreadlength should do the trick
+my $FILTER_BUFFER  = 100;
 
 my $current_pos = undef;
 
 my $good_trans = legal_transitions();
 
+print `./samtools view -H $bam_file`;
 
 open (my $bam, "./samtools view $bam_file | ") || die "Could not open 'stream': $!\n";
 while(<$bam>) {
@@ -38,6 +44,7 @@ while(<$bam>) {
 		flags  => $flags, 
 		chr    => $chr, 
 		pos    => $pos, 
+		mapq   => $mapq,
 		end    => $pos + length($sequence) - 1};
   
   my $csfasta = $opts[0];
@@ -54,6 +61,9 @@ while(<$bam>) {
   $csfasta =~ s/CS:Z://;
   $csfasta =~ tr/0123/abcd/;
   $csfasta  = substr($csfasta, 2);
+  if ($flags & 0x0010 ) {
+    $csfasta = reverse( $csfasta);
+  }
 
   
   next if ($cigar =~ /[IDNP]/);
@@ -64,7 +74,7 @@ while(<$bam>) {
     # array as many places. If there is a gap, traverse the whole thing and reset
     # thewhole thing, so we start from fresh.
     
-    print "stepping from $current_pos =>>  $pos\n";
+    print STDERR "stepping from $current_pos =>>  $pos\n";
     for(my $i = 0; $i < $pos - $current_pos; $i++ ) {
 
       # This is a sliding array, keeping track of all the colour balances, and update the SNP array...
@@ -93,19 +103,95 @@ while(<$bam>) {
 	  
       }
 
-      if ( @reads &&  $reads[0]{ end } + $FILTER_BUFFER <= $pos + $i ) {
+      if ( @reads &&  $reads[0]{ pos } + $FILTER_BUFFER <= $pos + $i ) {
+	
 	
 	while ( 1 ) {	   
-	  last 	if ( !@SNPs  || $SNPs[0][1][0] + $FILTER_BUFFER > $reads[0]{ pos } );
+	  last 	if ( !@SNPs  || $reads[0]{ pos } + $FILTER_BUFFER > $SNPs[0][1][0]  );
 	  my @snp = shift @SNPs;
-	  print "Removing SNP :: $snp[0][0][0] - $snp[0][1][0] \n";
+#	  print "Removing SNP :: $snp[0][0][0] - $snp[0][1][0] \n";
 	}
 
-	print "Removing reads mapped before: ". ($pos + $i - $FILTER_BUFFER ). " checking them against: ". @SNPs ." SNPs (read[0]:: $reads[0]{ pos } --> $reads[0]{ end })\n";
-	while ( @reads > 0 && $reads[0]{ end } + $FILTER_BUFFER < $pos + $i ) {
+#	print "Removing reads mapped before: ". ($pos + $i - $FILTER_BUFFER ). " checking them against: ". @SNPs ." SNPs (read[0]:: $reads[0]{ pos } --> $reads[0]{ end })\n";
+#	print "Pre-removal nr of reads: " . @reads ."\n";
+	
+	my ( $s, $d, $e) = (0,0,0);
+
+	while ( @reads > 0 && $reads[0]{ pos } + $FILTER_BUFFER < $pos + $i ) {
 	  my $read = shift @reads;
-	}
+	  
+#	  print "$$read{pos} ==> $$read{ end } \n";
 
+	  goto PRINT if ( ! $$read{singles} && ! $$read{doubles} );
+	  
+#	  print "Checking againt snps\n";
+	  foreach my $snp ( @SNPs ) {
+	    my ($snp_start, $snp_end) = ($$snp[0][0], $$snp[1][0]);
+	    
+	    foreach my $single (@{$$read{singles}}) {
+
+	      if (($single - 1 + $$read{pos} <= $snp_start &&
+		   $single + 1 + $$read{pos} >= $snp_end)
+		  || 
+		  ($single - 1 + $$read{pos} <= $snp_start &&
+		   $single + 1 + $$read{pos} >= $snp_start)
+		  ||
+		  ($single - 1 + $$read{pos} <= $snp_end &&
+		   $single + 1 + $$read{pos} >= $snp_end)) {
+		
+		$$read{flags} -= 4;
+		$$read{mapq}   = 2;	
+		$s++;
+#		print "One single\n";
+		
+		goto PRINT;
+	      }
+	    }  
+
+	    foreach my $double (@{$$entry{doubles}}) {
+	      
+	      if (($$double[0] + $$read{pos} <= $snp_start &&
+		   $$double[1] + $$read{pos} >= $snp_end)
+		  || 
+		  ($$double[0] + $$read{pos} <= $snp_start &&
+		   $$double[1] + $$read{pos} >= $snp_start)
+		  ||
+		  ($$double[0] + $$read{pos} <= $snp_end &&
+		   $$double[1] + $$read{pos} >= $snp_end)) {
+		
+		$$read{flags} -= 4;
+		$$read{mapq}   = 2;		
+		$d++;
+#		print "One double\n";
+		
+		goto PRINT;
+	      }
+	    }  
+	  
+	  
+	    if ( $$read{pos} == $snp_end || $$read{end}  == $snp_end ) {
+	    
+	      $$read{flags} -= 4;
+	      $$read{mapq}   = 2;		
+	      $e++;
+#	      print "One ends\n";
+	      goto PRINT;
+	    }
+	  }
+	PRINT:
+	  my $sam    = $$read{ sam   };
+	  @$sam[ 1 ] = $$read{ flags };
+	  @$sam[ 4 ] = $$read{ mapq  };
+	  
+	  print join("\t", @$sam) . "\n";
+
+	  
+	}
+	  
+	print STDERR "$s, $d, $e\n";
+#	print "Post-removal nr of reads: " . @reads ."\n";
+
+	
 
       }
 
@@ -117,11 +203,15 @@ while(<$bam>) {
 
 #  print Dumper( \@SNPs) if ( @SNPs );
 
-#  my $gcsfasta = substr(fasta2csfasta($gseq), 1);
+  my $hlen = length($sequence);
+  my $gseq = substr($seq, $pos - 1, $hlen + 1);
+  my $gcsfasta = substr(fasta2csfasta($gseq), 1);
+  # for some odd reason, I cannot be arsed to figure out right now...
+  $gcsfasta = substr($gcsfasta, 0, length($csfasta)) if ( length( $gcsfasta) > length($csfasta));
 
   $csfasta  = patch_alignment($csfasta, $cigar);
 
-  my ($singles, $doubles) =  align($csfasta, $csfasta, $flags & 0x0010);
+  my ($singles, $doubles) =  align($csfasta, $gcsfasta, $flags & 0x0010);
    
   $$entry{singles}  = $singles;
   $$entry{doubles}  = $doubles;
@@ -129,10 +219,10 @@ while(<$bam>) {
   push @reads, $entry;
 #  print "$csfasta\n";
 
-#  my @gcsf = split("", $gcsfasta);
+  my @gcsf = split("", $gcsfasta);
   my @csf = split("", $csfasta);
   for(my $i = 0; $i<@csf;$i++) {
-    $cs_splits[$i]{ref} = 'a';
+    $cs_splits[$i]{ref} = $gcsf[$i];
     $cs_splits[$i]{pos} = $pos  + $i;
     $cs_splits[$i]{$csf[$i]}++;
   }
@@ -162,7 +252,7 @@ sub align {
       $snp = 0;
     }
     else {
-      $align[ $i] = 0;
+      $align[ $i ] = 0;
       # Check and see if this is a double "error" IE a SNP
       if ( $i > 0 && ! $align[ $i - 1 ]) {
 
@@ -180,6 +270,8 @@ sub align {
       }
     }
   }
+
+#  print "$s1\n".join("", @align)."\n$s2\n\n";
 
   my @long;
 #  print Dumper( @doubles );
@@ -373,7 +465,7 @@ sub fasta2csfasta {
 sub patch_alignment {
   my ( $seq, $cigar ) = @_;
 
-  return $seq;
+#  return $seq;
 
 #  return ($seq) if ( $cigar !~ /[DIS]/);
   
