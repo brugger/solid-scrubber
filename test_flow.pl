@@ -74,7 +74,7 @@ while(<$bam>) {
     # array as many places. If there is a gap, traverse the whole thing and reset
     # thewhole thing, so we start from fresh.
     
-    print STDERR "stepping from $current_pos =>>  $pos\n";
+#    print STDERR "stepping from $current_pos =>>  $pos\n";
     for(my $i = 0; $i < $pos - $current_pos; $i++ ) {
 
       # This is a sliding array, keeping track of all the colour balances, and update the SNP array...
