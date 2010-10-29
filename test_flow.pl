@@ -21,7 +21,7 @@ my (@cs_splits, @ref_ids, @reads, @SNPs);
 
 my $CS_PRE_POS     = 1;
 my $CS_PRE_PRE_POS = 0;
-my $MIN_SPLIT      = 20; # should be something like 10-15...
+my $MIN_SPLIT      = 60; # should be something like 10-15...
 
 #this should be > readlength + the maximum number of expected inserts. 2xreadlength should do the trick
 my $FILTER_BUFFER  = 100;
@@ -31,8 +31,11 @@ my $current_pos = undef;
 my $good_trans = legal_transitions();
 
 print `./samtools view -H $bam_file`;
+my ( $s, $d, $e) = (0,0,0);
 
-open (my $bam, "./samtools view $bam_file | ") || die "Could not open 'stream': $!\n";
+my $region = "chrX:2,789,549-2,789,590";
+#$region = "chrX:2,789,818-2,789,859";
+open (my $bam, "./samtools view $bam_file $region | ") || die "Could not open 'stream': $!\n";
 while(<$bam>) {
 
   chomp;
@@ -59,15 +62,15 @@ while(<$bam>) {
   }
       
   $csfasta =~ s/CS:Z://;
-  $csfasta =~ tr/0123/abcd/;
+  $csfasta =~ tr/0/O/;
   $csfasta  = substr($csfasta, 2);
   if ($flags & 0x0010 ) {
     $csfasta = reverse( $csfasta);
   }
 
+  # no looking at reads with indels in them right now... 
   
   next if ($cigar =~ /[IDNP]/);
-
 
   if ( $current_pos && $current_pos != $pos )  {
     # the cs_splits array needs to be synced with this new pos. Bring forth the 
@@ -81,10 +84,10 @@ while(<$bam>) {
       shift @ref_ids if ( @ref_ids >= 2 );
       
       my ($total, $right) = (0,0);
-      foreach my $colour ( 'a','b','c','d' ) {
-	next if (!$cs_splits[$i]{$colour});
-	$total += $cs_splits[$i]{$colour};
-	$right += $cs_splits[$i]{$colour} if ( $cs_splits[$i]{ref} eq $colour);
+      foreach my $colour ( 'O','1','2','3' ) {
+	next if (!$cs_splits[0]{$colour});
+	$total += $cs_splits[0]{$colour};
+	$right += $cs_splits[0]{$colour} if ( $cs_splits[0]{ref} eq $colour);
       }
 
       if ( $total == 0 ) {
@@ -92,8 +95,11 @@ while(<$bam>) {
 	next;
       }
 
-      push @ref_ids, [$cs_splits[$i]{pos}, $right*100/$total];
+#      print Dumper( $cs_splits[0], $right*100/$total );
 
+      push @ref_ids, [$cs_splits[$i]{pos}, $right*100/$total];
+      shift @cs_splits;
+      
       if ( $ref_ids[ $CS_PRE_PRE_POS ] && $ref_ids[ $CS_PRE_POS ]  &&
 	   $ref_ids[ $CS_PRE_PRE_POS ][ 1 ] < $MIN_SPLIT && 
 	   $ref_ids[ $CS_PRE_POS ][ 1 ] < $MIN_SPLIT ) {
@@ -104,94 +110,21 @@ while(<$bam>) {
       }
 
       if ( @reads &&  $reads[0]{ pos } + $FILTER_BUFFER <= $pos + $i ) {
-	
-	
+	#remove SNPs further behind that we will ever be seeing again...
 	while ( 1 ) {	   
 	  last 	if ( !@SNPs  || $reads[0]{ pos } + $FILTER_BUFFER > $SNPs[0][1][0]  );
 	  my @snp = shift @SNPs;
-#	  print "Removing SNP :: $snp[0][0][0] - $snp[0][1][0] \n";
 	}
 
-#	print "Removing reads mapped before: ". ($pos + $i - $FILTER_BUFFER ). " checking them against: ". @SNPs ." SNPs (read[0]:: $reads[0]{ pos } --> $reads[0]{ end })\n";
-#	print "Pre-removal nr of reads: " . @reads ."\n";
-	
-	my ( $s, $d, $e) = (0,0,0);
-
+	#scrub all the reads that are far enough away..
 	while ( @reads > 0 && $reads[0]{ pos } + $FILTER_BUFFER < $pos + $i ) {
 	  my $read = shift @reads;
-	  
-#	  print "$$read{pos} ==> $$read{ end } \n";
 
-	  goto PRINT if ( ! $$read{singles} && ! $$read{doubles} );
-	  
-#	  print "Checking againt snps\n";
-	  foreach my $snp ( @SNPs ) {
-	    my ($snp_start, $snp_end) = ($$snp[0][0], $$snp[1][0]);
-	    
-	    foreach my $single (@{$$read{singles}}) {
-
-	      if (($single - 1 + $$read{pos} <= $snp_start &&
-		   $single + 1 + $$read{pos} >= $snp_end)
-		  || 
-		  ($single - 1 + $$read{pos} <= $snp_start &&
-		   $single + 1 + $$read{pos} >= $snp_start)
-		  ||
-		  ($single - 1 + $$read{pos} <= $snp_end &&
-		   $single + 1 + $$read{pos} >= $snp_end)) {
-		
-		$$read{flags} -= 4;
-		$$read{mapq}   = 2;	
-		$s++;
-#		print "One single\n";
-		
-		goto PRINT;
-	      }
-	    }  
-
-	    foreach my $double (@{$$entry{doubles}}) {
-	      
-	      if (($$double[0] + $$read{pos} <= $snp_start &&
-		   $$double[1] + $$read{pos} >= $snp_end)
-		  || 
-		  ($$double[0] + $$read{pos} <= $snp_start &&
-		   $$double[1] + $$read{pos} >= $snp_start)
-		  ||
-		  ($$double[0] + $$read{pos} <= $snp_end &&
-		   $$double[1] + $$read{pos} >= $snp_end)) {
-		
-		$$read{flags} -= 4;
-		$$read{mapq}   = 2;		
-		$d++;
-#		print "One double\n";
-		
-		goto PRINT;
-	      }
-	    }  
-	  
-	  
-	    if ( $$read{pos} == $snp_end || $$read{end}  == $snp_end ) {
-	    
-	      $$read{flags} -= 4;
-	      $$read{mapq}   = 2;		
-	      $e++;
-#	      print "One ends\n";
-	      goto PRINT;
-	    }
-	  }
-	PRINT:
-	  my $sam    = $$read{ sam   };
-	  @$sam[ 1 ] = $$read{ flags };
-	  @$sam[ 4 ] = $$read{ mapq  };
-	  
-	  print join("\t", @$sam) . "\n";
-
-	  
+	  scrub( $read, \@SNPs);
+	  print_sam( $read );
 	}
 	  
-	print STDERR "$s, $d, $e\n";
 #	print "Post-removal nr of reads: " . @reads ."\n";
-
-	
 
       }
 
@@ -211,10 +144,11 @@ while(<$bam>) {
 
   $csfasta  = patch_alignment($csfasta, $cigar);
 
-  my ($singles, $doubles) =  align($csfasta, $gcsfasta, $flags & 0x0010);
+  my ($singles, $doubles, $a) =  align($csfasta, $gcsfasta, $flags & 0x0010);
    
   $$entry{singles}  = $singles;
   $$entry{doubles}  = $doubles;
+  $$entry{a}        = $a;
 
   push @reads, $entry;
 #  print "$csfasta\n";
@@ -228,6 +162,106 @@ while(<$bam>) {
   }
 }
 
+print STDERR Dumper( \@SNPs);
+
+# empty the reads buffer..
+while ( @reads ) {
+  my $read = shift @reads;
+
+  scrub( $read, \@SNPs);
+  print_sam( $read );
+  
+}
+
+print STDERR "Scrubbing stats: single: $s, double+: $d, ends: $e\n";
+
+
+
+
+# 
+# 
+# 
+# Kim Brugger (28 Oct 2010)
+sub print_sam {
+  my ( $read ) = @_;
+
+#  return;
+  my $sam    = $$read{ sam   };
+  @$sam[ 1 ] = $$read{ flags };
+  @$sam[ 4 ] = $$read{ mapq  };
+  
+  print join("\t", @$sam) . "\n";
+}
+
+
+# 
+# 
+# 
+# Kim Brugger (28 Oct 2010)
+sub scrub  {
+  my ( $read, $SNPs ) = @_;
+
+
+  return if ( ! $$read{singles} && ! $$read{doubles} );
+	  
+  foreach my $snp ( @$SNPs ) {
+    my ($snp_start, $snp_end) = ($$snp[0][0], $$snp[1][0]);
+    
+    foreach my $single (@{$$read{singles}}) {
+      
+      if (($single - 1 + $$read{pos} <= $snp_start &&
+	   $single + 1 + $$read{pos} >= $snp_end)
+	  || 
+	  ($single - 1 + $$read{pos} <= $snp_start &&
+	   $single + 1 + $$read{pos} >= $snp_start)
+	  ||
+	  ($single - 1 + $$read{pos} <= $snp_end &&
+	   $single + 1 + $$read{pos} >= $snp_end)) {
+
+#	print $$read{a};
+	
+	$$read{flags} -= 4;
+	$$read{mapq}   = 2;	
+	$s++;
+	return;
+      }
+    }  
+
+    foreach my $double (@{$$read{doubles}}) {
+      
+      if (($$double[0] + $$read{pos} <= $snp_start &&
+	   $$double[1] + $$read{pos} >= $snp_end)
+	  || 
+	  ($$double[0] + $$read{pos} <= $snp_start &&
+	   $$double[1] + $$read{pos} >= $snp_start)
+	  ||
+	  ($$double[0] + $$read{pos} <= $snp_end &&
+	   $$double[1] + $$read{pos} >= $snp_end)) {
+	
+
+#	print $$read{a};
+
+	$$read{flags} -= 4;
+	$$read{mapq}   = 2;		
+	$d++;
+	return;
+      }
+    }  	  	  
+	  
+    if ( $$read{pos} == $snp_end || $$read{end}  == $snp_end ) {
+	    
+#      print $$read{a};
+      $$read{flags} -= 4;
+      $$read{mapq}   = 2;		
+      $e++;
+      return;
+    }
+  }
+
+  return;
+
+}
+
 
 
 # 
@@ -237,7 +271,7 @@ while(<$bam>) {
 sub align {
   my ( $s1, $s2, $strand) = @_;
 
-  return ([],[]) if ($s1 eq $s2);
+  return ([],[], "NA\n") if ($s1 eq $s2);
 
   my @s1 = split("", $s1);
   my @s2 = split("", $s2);
@@ -288,7 +322,9 @@ sub align {
     }
     
   }
-  return( \@singles, \@long);
+  my $align = join("", @align);
+  $align =~ tr/01/ \|/;
+  return( \@singles, \@long, "$s1\n$align\n$s2\n\n");
 }
 
 
@@ -334,22 +370,22 @@ sub cs2fasta {
   my ( $cs ) = @_;
   
   my %colourspace = (
-    "Aa" => "A",
-    "Ca" => "C",
-    "Ga" => "G",
-    "Ta" => "T",
-    "Ab" => "C",
-    "Cb" => "A",
-    "Gc" => "A",
-    "Ac" => "G",
-    "Ad" => "T",
-    "Td" => "A",
-    "Cc" => "T",
-    "Tc" => "C",
-    "Cd" => "G",
-    "Gd" => "C",
-    "Gb" => "T",
-    "Tb" => "G" );
+    "AO" => "A",
+    "CO" => "C",
+    "GO" => "G",
+    "TO" => "T",
+    "A1" => "C",
+    "C1" => "A",
+    "G2" => "A",
+    "A2" => "G",
+    "A3" => "T",
+    "T3" => "A",
+    "C2" => "T",
+    "T2" => "C",
+    "C3" => "G",
+    "G3" => "C",
+    "G1" => "T",
+    "T1" => "G" );
 
   my @letters = split( //, $cs );
   my $first_base = $letters[0];
@@ -370,7 +406,7 @@ sub cs2fasta {
 sub makekeys {
   my ($length) = @_;
 
-  my @ALFA = split('', qq/abcd/);
+  my @ALFA = split('', qq/O123/);
   my $al = @ALFA;
   
   $length = shift || 2;
@@ -403,43 +439,23 @@ sub makekeys {
 sub fasta2csfasta {
   my ($fasta) = @_;
 
-
-#   my %base2colour = (
-#     'AA' => '0',
-#     'AC' => '1',
-#     'AG' => '2',
-#     'AT' => '3',
-#     'CA' => '1',
-#     'CC' => '0',
-#     'CG' => '3',
-#     'CT' => '2',
-#     'GA' => '2',
-#     'GC' => '3',
-#     'GG' => '0',
-#     'GT' => '1',
-#     'TA' => '3',
-#     'TC' => '2',
-#     'TG' => '1',
-#     'TT' => '0');
-
-
-  my %base2colour = (
-    'AA' => 'a',
-    'AC' => 'b',
-    'AG' => 'c',
-    'AT' => 'd',
-    'CA' => 'b',
-    'CC' => 'a',
-    'CG' => 'd',
-    'CT' => 'c',
-    'GA' => 'c',
-    'GC' => 'd',
-    'GG' => 'a',
-    'GT' => 'b',
-    'TA' => 'd',
-    'TC' => 'c',
-    'TG' => 'b',
-    'TT' => 'a');
+   my %base2colour = (
+     'AA' => 'O',
+     'AC' => '1',
+     'AG' => '2',
+     'AT' => '3',
+     'CA' => '1',
+     'CC' => 'O',
+     'CG' => '3',
+     'CT' => '2',
+     'GA' => '2',
+     'GC' => '3',
+     'GG' => 'O',
+     'GT' => '1',
+     'TA' => '3',
+     'TC' => '2',
+     'TG' => '1',
+     'TT' => 'O');
   
   my @letters = split( //, $fasta );
   my $first_base = $letters[0];
@@ -520,10 +536,10 @@ sub csfasta2fasta {
   my ($csfasta) = @_;
 
   my %colourspace = (
-    "A0" => "A",
-    "C0" => "C",
-    "G0" => "G",
-    "T0" => "T",
+    "AO" => "A",
+    "CO" => "C",
+    "GO" => "G",
+    "TO" => "T",
     "A1" => "C",
     "C1" => "A",
     "G2" => "A",
