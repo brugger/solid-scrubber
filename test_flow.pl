@@ -13,7 +13,7 @@ use warnings;
 my $bam_file = shift;
 
 my $chr_file = "chrX_hg18.fa";
-$chr_file    = 'chrX.fa';
+#$chr_file    = 'chrX.fa';
 my ($chr, $seq) = readfasta( $chr_file );
 
 
@@ -35,6 +35,7 @@ my ( $s, $d, $e) = (0,0,0);
 
 my $region = "chrX:2,789,549-2,789,590";
 #$region = "chrX:2,789,818-2,789,859";
+$region = "chrX";
 open (my $bam, "./samtools view $bam_file $region | ") || die "Could not open 'stream': $!\n";
 while(<$bam>) {
 
@@ -68,10 +69,6 @@ while(<$bam>) {
     $csfasta = reverse( $csfasta);
   }
 
-  # no looking at reads with indels in them right now... 
-  
-  next if ($cigar =~ /[IDNP]/);
-
   if ( $current_pos && $current_pos != $pos )  {
     # the cs_splits array needs to be synced with this new pos. Bring forth the 
     # array as many places. If there is a gap, traverse the whole thing and reset
@@ -90,29 +87,42 @@ while(<$bam>) {
 	$right += $cs_splits[0]{$colour} if ( $cs_splits[0]{ref} eq $colour);
       }
 
-      if ( $total == 0 ) {
-	@ref_ids = ();
+      if ( $total == 0) {
+#	@ref_ids = [];
 	next;
       }
 
 #      print Dumper( $cs_splits[0], $right*100/$total );
 
-      push @ref_ids, [$cs_splits[$i]{pos}, $right*100/$total];
+#      print STDERR "$cs_splits[0]{pos}, $right*100/$total];\n";
+      push @ref_ids, [$cs_splits[0]{pos}, $right*100/$total];
       shift @cs_splits;
+
+#      print STDERR Dumper( \@ref_ids );
       
-      if ( $ref_ids[ $CS_PRE_PRE_POS ] && $ref_ids[ $CS_PRE_POS ]  &&
+      if ( @ref_ids == 2 && 
+	   $ref_ids[ $CS_PRE_PRE_POS ] && $ref_ids[ $CS_PRE_POS ]  &&
 	   $ref_ids[ $CS_PRE_PRE_POS ][ 1 ] < $MIN_SPLIT && 
 	   $ref_ids[ $CS_PRE_POS ][ 1 ] < $MIN_SPLIT ) {
+
+#      print STDERR Dumper( \@ref_ids );
+
+
 	  
 #	  push @SNPs, [$ref_ids[ $CS_PRE_PRE_POS ][0], $ref_ids[ $CS_PRE_POS ][0]];
+#	print STDERR "push SNPs, $ref_ids[ $CS_PRE_PRE_POS ][0], $ref_ids[ $CS_PRE_POS ][1]; \n";
 	  push @SNPs, [$ref_ids[ $CS_PRE_PRE_POS ], $ref_ids[ $CS_PRE_POS ]];
+#	  print STDERR "111 " . Dumper( @SNPs);
 	  
       }
 
+
+
       if ( @reads &&  $reads[0]{ pos } + $FILTER_BUFFER <= $pos + $i ) {
 	#remove SNPs further behind that we will ever be seeing again...
-	while ( 1 ) {	   
-	  last 	if ( !@SNPs  || $reads[0]{ pos } + $FILTER_BUFFER > $SNPs[0][1][0]  );
+	while ( @SNPs ) { 
+#	  print STDERR "222 " . Dumper( @SNPs);
+	  last 	if ($reads[0]{ pos } + $FILTER_BUFFER > $SNPs[0][1][0]  );
 	  my @snp = shift @SNPs;
 	}
 
@@ -131,6 +141,17 @@ while(<$bam>) {
     }
   }
   $current_pos = $pos;
+
+  # no looking at reads with indels in them right now... 
+  if ($cigar =~ /[IDNP]/) {
+    $$entry{ indel }++;
+    push @reads, $entry;
+    next;
+  }
+  
+    
+  
+
   
 #  print "pos: $current_pos, buffered reads: " . @reads . "\n";
 
@@ -162,7 +183,7 @@ while(<$bam>) {
   }
 }
 
-print STDERR Dumper( \@SNPs);
+#print STDERR Dumper( \@SNPs);
 
 # empty the reads buffer..
 while ( @reads ) {
@@ -201,11 +222,13 @@ sub print_sam {
 sub scrub  {
   my ( $read, $SNPs ) = @_;
 
+  return if ( $$read{indel} );
 
   return if ( ! $$read{singles} && ! $$read{doubles} );
 	  
   foreach my $snp ( @$SNPs ) {
     my ($snp_start, $snp_end) = ($$snp[0][0], $$snp[1][0]);
+    next if ( ! $snp_start || ! $snp_end);
     
     foreach my $single (@{$$read{singles}}) {
       
@@ -511,7 +534,6 @@ sub patch_alignment {
       next;
     }
     elsif ( $type eq "D") {
-      print STDERR "$cigar\n";
       my @dashes = split("", "-"x$length);
       splice(@seq,  $offset, 0, @dashes);
       $offset += $length;
