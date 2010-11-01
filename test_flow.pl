@@ -16,6 +16,15 @@ my $chr_file = "chrX_hg18.fa";
 #$chr_file    = 'chrX.fa';
 my ($chr, $seq) = readfasta( $chr_file );
 
+use lib "/home/kb468/easih-misc/modules/";
+use EASIH::Timer;
+my $t = EASIH::Timer->New();
+$t->start();
+print STDERR "Converting chromosome to colour space...\n";
+my $gcsfasta = fasta2csfasta($seq);
+$t->stop();
+print STDERR "...Done\n";
+print $t->report() . "\n";
 
 my (@cs_splits, @ref_ids, @reads, @SNPs);
 
@@ -47,6 +56,7 @@ while(<$bam>) {
 		id     => $id,
 		flags  => $flags, 
 		chr    => $chr, 
+		cigar  => $cigar,
 		pos    => $pos, 
 		mapq   => $mapq,
 		end    => $pos + length($sequence) - 1};
@@ -88,32 +98,21 @@ while(<$bam>) {
       }
 
       if ( $total == 0) {
-#	@ref_ids = [];
 	next;
       }
 
-#      print Dumper( $cs_splits[0], $right*100/$total );
-
-#      print STDERR "$cs_splits[0]{pos}, $right*100/$total];\n";
       push @ref_ids, [$cs_splits[0]{pos}, $right*100/$total];
       shift @cs_splits;
 
-#      print STDERR Dumper( \@ref_ids );
-      
       if ( @ref_ids == 2 && 
 	   $ref_ids[ $CS_PRE_PRE_POS ] && $ref_ids[ $CS_PRE_POS ]  &&
 	   $ref_ids[ $CS_PRE_PRE_POS ][ 1 ] < $MIN_SPLIT && 
 	   $ref_ids[ $CS_PRE_POS ][ 1 ] < $MIN_SPLIT ) {
 
-#      print STDERR Dumper( \@ref_ids );
-
-
 	  
 #	  push @SNPs, [$ref_ids[ $CS_PRE_PRE_POS ][0], $ref_ids[ $CS_PRE_POS ][0]];
 #	print STDERR "push SNPs, $ref_ids[ $CS_PRE_PRE_POS ][0], $ref_ids[ $CS_PRE_POS ][1]; \n";
 	  push @SNPs, [$ref_ids[ $CS_PRE_PRE_POS ], $ref_ids[ $CS_PRE_POS ]];
-#	  print STDERR "111 " . Dumper( @SNPs);
-	  
       }
 
 
@@ -121,7 +120,6 @@ while(<$bam>) {
       if ( @reads &&  $reads[0]{ pos } + $FILTER_BUFFER <= $pos + $i ) {
 	#remove SNPs further behind that we will ever be seeing again...
 	while ( @SNPs ) { 
-#	  print STDERR "222 " . Dumper( @SNPs);
 	  last 	if ($reads[0]{ pos } + $FILTER_BUFFER > $SNPs[0][1][0]  );
 	  my @snp = shift @SNPs;
 	}
@@ -142,30 +140,26 @@ while(<$bam>) {
   }
   $current_pos = $pos;
 
-  # no looking at reads with indels in them right now... 
-  if ($cigar =~ /[IDNP]/) {
-    $$entry{ indel }++;
-    push @reads, $entry;
-    next;
-  }
-  
-    
-  
-
   
 #  print "pos: $current_pos, buffered reads: " . @reads . "\n";
 
-#  print Dumper( \@SNPs) if ( @SNPs );
 
-  my $hlen = length($sequence);
-  my $gseq = substr($seq, $pos - 1, $hlen + 1);
-  my $gcsfasta = substr(fasta2csfasta($gseq), 1);
+  my $hlen = length($csfasta);
+  if ( 1 &&  $cigar =~ /[IDNP]/) {
+    my $t_cigar = $cigar;
+    my $padding = 2;
+    $t_cigar =~ s/(\d+)[ID]/ {$padding += $1}/ge;
+    $hlen += $padding;
+  }
+
+  my $gseq = substr($gcsfasta, $pos - 1, $hlen);
   # for some odd reason, I cannot be arsed to figure out right now...
-  $gcsfasta = substr($gcsfasta, 0, length($csfasta)) if ( length( $gcsfasta) > length($csfasta));
+#  $gseq = substr($gseq, 0, length($csfasta)) if ( length( $gseq) > length($csfasta));
 
-  $csfasta  = patch_alignment($csfasta, $cigar);
+  ($csfasta, $gseq)  = patch_alignment($csfasta, $gseq, $cigar);
 
-  my ($singles, $doubles, $a) =  align($csfasta, $gcsfasta, $flags & 0x0010);
+
+  my ($singles, $doubles, $a) =  align($csfasta, $gseq, $flags & 0x0010);
    
   $$entry{singles}  = $singles;
   $$entry{doubles}  = $doubles;
@@ -174,7 +168,7 @@ while(<$bam>) {
   push @reads, $entry;
 #  print "$csfasta\n";
 
-  my @gcsf = split("", $gcsfasta);
+  my @gcsf = split("", $gseq);
   my @csf = split("", $csfasta);
   for(my $i = 0; $i<@csf;$i++) {
     $cs_splits[$i]{ref} = $gcsf[$i];
@@ -183,7 +177,6 @@ while(<$bam>) {
   }
 }
 
-#print STDERR Dumper( \@SNPs);
 
 # empty the reads buffer..
 while ( @reads ) {
@@ -211,7 +204,7 @@ sub print_sam {
   @$sam[ 1 ] = $$read{ flags };
   @$sam[ 4 ] = $$read{ mapq  };
   
-  print join("\t", @$sam) . "\n";
+#  print join("\t", @$sam) . "\n";
 }
 
 
@@ -241,7 +234,7 @@ sub scrub  {
 	  ($single - 1 + $$read{pos} <= $snp_end &&
 	   $single + 1 + $$read{pos} >= $snp_end)) {
 
-#	print $$read{a};
+#	print "$$read{id} -- $$read{cigar}\n$$read{a}";
 	
 	$$read{flags} -= 4;
 	$$read{mapq}   = 2;	
@@ -262,6 +255,7 @@ sub scrub  {
 	   $$double[1] + $$read{pos} >= $snp_end)) {
 	
 
+#	print "$$read{id} -- $$read{cigar}\n$$read{a}";
 #	print $$read{a};
 
 	$$read{flags} -= 4;
@@ -273,6 +267,7 @@ sub scrub  {
 	  
     if ( $$read{pos} == $snp_end || $$read{end}  == $snp_end ) {
 	    
+#      print "$$read{id} -- $$read{cigar}\n$$read{a}";
 #      print $$read{a};
       $$read{flags} -= 4;
       $$read{mapq}   = 2;		
@@ -455,11 +450,47 @@ sub makekeys {
 
 
 
+
 # 
 # 
 # 
 # Kim Brugger (13 Oct 2010)
 sub fasta2csfasta {
+  my ($fasta) = @_;
+
+   my %base2colour = (
+     'AA' => 'O',
+     'AC' => '1',
+     'AG' => '2',
+     'AT' => '3',
+     'CA' => '1',
+     'CC' => 'O',
+     'CG' => '3',
+     'CT' => '2',
+     'GA' => '2',
+     'GC' => '3',
+     'GG' => 'O',
+     'GT' => '1',
+     'TA' => '3',
+     'TC' => '2',
+     'TG' => '1',
+     'TT' => 'O');
+
+  my $res = "";
+#  for ( my $i = 0;$i< 3000000 ; $i++ ) {
+  for ( my $i = 0;$i< length($fasta) - 1 ; $i++ ) {
+    $res .= $base2colour{ substr( $fasta, $i, 2)} || ".";
+  }
+
+  return $res;
+}
+
+
+# 
+# 
+# 
+# Kim Brugger (13 Oct 2010)
+sub fasta2csfasta_old {
   my ($fasta) = @_;
 
    my %base2colour = (
@@ -496,12 +527,90 @@ sub fasta2csfasta {
 
 
 
+sub patch_alignment {
+  my ( $read, $ref, $cigar ) = @_;
+
+  # Extended cigar format definition ( from the sam/bam format file)
+  # M Alignment match (can be a sequence match or mismatch)
+  # I Insertion to the reference
+  # D Deletion from the reference
+  # N Skipped region from the reference
+  # S Soft clip on the read (clipped sequence present in <seq>)
+  # H Hard clip on the read (clipped sequence NOT present in <seq>)
+  # P Padding (silent deletion from the padded reference sequence)
+  
+  my @read  = split("", $read );
+  my @ref   = split("", $ref );
+
+#  print "$read\n$cigar\n$ref\n";
+
+  my $ref_cigar = $cigar;
+  $ref_cigar =~ s/^\d+[HD]//;
+
+  my (@cigar) = $ref_cigar =~ /(\d+\w)/g;
+
+  my $offset = 0;
+  foreach my $patch ( @cigar ) {
+    my ($length, $type) =  $patch =~ /(\d+)(\w)/;
+
+    if ( $type eq 'M') {
+      $offset += $length;
+      next;
+    }
+    elsif ( $type eq "I") {
+      my @dashes = split("", "-"x$length);
+      splice(@ref, $offset, 0, @dashes);
+    }
+    elsif ( $type eq "S" || $type eq "H") {
+      splice(@ref,  $offset, $length);
+    }    
+    else {
+#      die "Does not know how to handle an feature of the type '$type'\n";
+    }
+  }
+
+  if (1){
+    $offset = 0;
+    my (@cigar) = $cigar =~ /(\d+\w)/g;
+    foreach my $patch ( @cigar ) {
+      my ($length, $type) =  $patch =~ /^(\d+)(\w)/;
+
+      if ( $type eq 'M') {
+	$offset += $length;
+	next;
+      }
+      elsif ( $type eq "D") {
+	my @dashes = split("", "-"x$length);
+	splice(@read,  $offset, 0, @dashes);
+	$offset += $length;
+      }
+      elsif ( $type eq "H" || $type eq "S") {
+      splice(@read,  $offset, $length);
+      }    
+      else {
+#	die "Does not know how to handle an feature of the type '$type'\n";
+      }
+    
+#      $offset += $length;
+    }
+  }
+  $read = join("", @read);
+  $ref  = join("", @ref );
+
+  $ref = substr($ref, 0, length($read));
+
+#  print "$read\n$cigar\n$ref\n";
+  
+  return ($read, $ref);
+}
+
+
 
 # 
 # 
 # 
 # Kim Brugger (20 Jul 2009)
-sub patch_alignment {
+sub patch_alignment_old {
   my ( $seq, $cigar ) = @_;
 
 #  return $seq;
