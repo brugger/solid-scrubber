@@ -9,32 +9,19 @@ use strict;
 use Data::Dumper;
 use warnings;
 
+my $bam_file = shift || die "USAGE: solid-scrubber.pl bam-file reference region\n";
 
-my $bam_file = shift;
+my $chr_file = shift || "/ifs/data/refs/hg18/hg18.fasta";
+die "'$chr_file' does not exist\n" 
+    if ( ! -e $chr_file );
+print STDERR "index does not exist for '$chr_file', please create one with samtools faidx\n"
+    if (! -e "$chr_file.fai");
 
-my $chr_file = "chrX_hg18.fa";
-#$chr_file    = 'chrX.fa';
-my ($chr, $seq) = readfasta( $chr_file );
-
-use lib "/home/kb468/easih-misc/modules/";
-use EASIH::Timer;
-my $t = EASIH::Timer->New();
-my $t2 = EASIH::Timer->New();
-$t2->start();
-$t->start();
-print STDERR "Converting chromosome to colour space...\n";
-my $gcsfasta = fasta2csfasta($seq);
-$t->stop();
-print STDERR "...Done\n";
-print STDERR "Chr conversion: " . $t->report() . "\n";
-
-my (@cs_splits, @ref_ids, @reads, @SNPs);
-
+my $gcsfasta;
 my $CS_PRE_POS     = 1;
 my $CS_PRE_PRE_POS = 0;
 my $MIN_SPLIT      = 60; # should be something like 10-15...
-my $MIN_DEPTH      = 15; # May I recommend something like 10-15?
-
+my $MIN_DEPTH      = 15; # I guess something between 7 and 20 should be goo
 #this should be > readlength + the maximum number of expected inserts. 2xreadlength should do the trick
 my $FILTER_BUFFER  = 100;
 
@@ -49,164 +36,195 @@ my $region = "chrX:2,789,549-2,789,590";
 $region = "chrX:2,789,818-2,789,859";
 $region = "chrX:2,789,818-3,789,818";
 $region = "chrX";
-open (my $bam, "./samtools view $bam_file $region | ") || die "Could not open 'stream': $!\n";
-while(<$bam>) {
+$region = shift;
 
-  chomp;
-  my @F = split("\t");
-  my ($id, $flags, $chr, $pos, $mapq, $cigar, $mate, $mate_pos, $insert_size, $sequence, $quality, @opts) = @F;
+if ( ! $region ) {
+  # loop through the regions one by one, but only keep the most current chr in memory.
   
-  my $entry = { sam    => \@F,
-		id     => $id,
-		flags  => $flags, 
-		chr    => $chr, 
-		cigar  => $cigar,
-		pos    => $pos, 
-		mapq   => $mapq,
-		end    => $pos + length($sequence) - 1};
-  
-  my $csfasta = $opts[0];
-
-  if ( $csfasta !~ /CS:Z:/) {
-    my $i = 1;
-    while( $i < @opts ) {
-      $csfasta = $opts[$i++];
-      
-      last  if ($csfasta =~ /CS:Z:/);
+  open(my $spipe, "./samtools view -H $chr_file | ") || die "Could not open '$chr_file': $!\n";
+  while(<$spipe>) {
+    next if ( ! /\@SQ/);
+    foreach my $field ( split("\t") ) {
+      if ( $field =~ /SN:(.*)/) {
+	$gcsfasta = readfasta( $chr_file, $1 );
+	analyse($1)
+      }
     }
   }
-      
-  $csfasta =~ s/CS:Z://;
-  $csfasta  = substr($csfasta, 2);
-  $csfasta =~ tr/0/O/;
-  if ($flags & 0x0010 ) {
-    $csfasta = reverse( $csfasta);
+}
+else {
+  if ($region =~ /^(\w):\d+/) {
+    $gcsfasta = readfasta( $chr_file );
+    analyse($1)
   }
+  else {
+    $gcsfasta = readfasta( $chr_file );
+    analyse($region)
+  }
+}
 
-  if ( $current_pos && $current_pos != $pos )  {
+
+# 
+# 
+# 
+# Kim Brugger (05 Nov 2010)
+sub analyse {
+  my ($region) = @_;
+
+  my (@cs_splits, @ref_ids, @reads, @SNPs);
+
+  open (my $bam, "./samtools view $bam_file $region | ") || die "Could not open 'stream': $!\n";
+  while(<$bam>) {
+
+    chomp;
+    my @F = split("\t");
+    my ($id, $flags, $chr, $pos, $mapq, $cigar, $mate, $mate_pos, $insert_size, $sequence, $quality, @opts) = @F;
     
-
-
-    # the cs_splits array needs to be synced with this new pos. Bring forth the 
-    # array as many places. If there is a gap, traverse the whole thing and reset
-    # thewhole thing, so we start from fresh.
+    my $entry = { sam    => \@F,
+		  id     => $id,
+		  flags  => $flags, 
+		  chr    => $chr, 
+		  cigar  => $cigar,
+		  pos    => $pos, 
+		  mapq   => $mapq,
+		  end    => $pos + length($sequence) - 1};
     
-#    print STDERR "stepping from $current_pos =>>  $pos\n";
-    for(my $i = 0; $i < $pos - $current_pos; $i++ ) {
-
-      # This is a sliding array, keeping track of all the colour balances, and update the SNP array...
-      shift @ref_ids if ( @ref_ids >= 2 );
-
-      next if (! $cs_splits[0]{total} || $cs_splits[0]{total} == 0);
-
-      next if ( $cs_splits[0]{total} < $MIN_DEPTH);
+    my $csfasta = $opts[0];
+    
+    if ( $csfasta !~ /CS:Z:/) {
+      my $i = 1;
+      while( $i < @opts ) {
+	$csfasta = $opts[$i++];
+	
+	last  if ($csfasta =~ /CS:Z:/);
+      }
+    }
+    
+    $csfasta =~ s/CS:Z://;
+    $csfasta  = substr($csfasta, 2);
+    $csfasta =~ tr/0/O/;
+    if ($flags & 0x0010 ) {
+      $csfasta = reverse( $csfasta);
+    }
+    
+    if ( $current_pos && $current_pos != $pos )  {
       
-      my ($right) = (0);
+      
+      
+      # the cs_splits array needs to be synced with this new pos. Bring forth the 
+      # array as many places. If there is a gap, traverse the whole thing and reset
+      # thewhole thing, so we start from fresh.
+      
+#    print STDERR "stepping from $current_pos =>>  $pos\n";
+      for(my $i = 0; $i < $pos - $current_pos; $i++ ) {
+	
+	# This is a sliding array, keeping track of all the colour balances, and update the SNP array...
+	shift @ref_ids if ( @ref_ids >= 2 );
+	
+	next if (! $cs_splits[0]{total} || $cs_splits[0]{total} == 0);
+	
+	next if ( $cs_splits[0]{total} < $MIN_DEPTH);
+	
+	my ($right) = (0);
 #      foreach my $colour ( 'O','1','2','3' ) {
 #	$right += $cs_splits[0]{ $colour } if ( $cs_splits[0]{ $colour } && $cs_splits[0]{ref} eq $colour);
 #      }
-      
-      map { $right += $cs_splits[0]{ $_ } if ( $cs_splits[0]{ $_ } && $cs_splits[0]{ref} eq $_)} ( 'O','1','2','3');
-
-
-      push @ref_ids, [$cs_splits[0]{pos}, $right*100/$cs_splits[0]{total}, $cs_splits[0]{total}];
-      shift @cs_splits;
-
-      if ( @ref_ids == 2 && 
-	   $ref_ids[ $CS_PRE_PRE_POS ] && $ref_ids[ $CS_PRE_POS ]  &&
-	   $ref_ids[ $CS_PRE_PRE_POS ][ 1 ] < $MIN_SPLIT && 
-	   $ref_ids[ $CS_PRE_POS ][ 1 ]     < $MIN_SPLIT ) {
-
-	print STDERR "SNP at pos $$entry{ pos } + $i \n";
-	push @SNPs, [$ref_ids[ $CS_PRE_PRE_POS ], $ref_ids[ $CS_PRE_POS ]];
-      }
-
-      if ( @reads &&  $reads[0]{ pos } + $FILTER_BUFFER <= $pos + $i ) {
-	#remove SNPs further behind that we will ever be seeing again...
-#	print STDERR "Buffered SNPs: " . @SNPs . "\n". " ($reads[0]{ pos } + $FILTER_BUFFER > $SNPs[0][1][0]); \n";
-	while ( @SNPs ) { 
-#	  print STDERR Dumper( $SNPs[0]);
-
-	  last 	if ($reads[0]{ pos } - $FILTER_BUFFER < $SNPs[0][1][0]);
-	  my @snp = shift @SNPs;
+	
+	map { $right += $cs_splits[0]{ $_ } if ( $cs_splits[0]{ $_ } && $cs_splits[0]{ref} eq $_)} ( 'O','1','2','3');
+	
+	
+	push @ref_ids, [$cs_splits[0]{pos}, $right*100/$cs_splits[0]{total}, $cs_splits[0]{total}];
+	shift @cs_splits;
+	
+	if ( @ref_ids == 2 && 
+	     $ref_ids[ $CS_PRE_PRE_POS ] && $ref_ids[ $CS_PRE_POS ]  &&
+	     $ref_ids[ $CS_PRE_PRE_POS ][ 1 ] < $MIN_SPLIT && 
+	     $ref_ids[ $CS_PRE_POS ][ 1 ]     < $MIN_SPLIT ) {
+	  
+	  print STDERR "SNP at pos $$entry{ pos } + $i \n";
+	  push @SNPs, [$ref_ids[ $CS_PRE_PRE_POS ], $ref_ids[ $CS_PRE_POS ]];
 	}
+	
+	if ( @reads &&  $reads[0]{ pos } + $FILTER_BUFFER <= $pos + $i ) {
+	  #remove SNPs further behind that we will ever be seeing again...
+#	print STDERR "Buffered SNPs: " . @SNPs . "\n". " ($reads[0]{ pos } + $FILTER_BUFFER > $SNPs[0][1][0]); \n";
+	  while ( @SNPs ) { 
+#	  print STDERR Dumper( $SNPs[0]);
+	    
+	    last 	if ($reads[0]{ pos } - $FILTER_BUFFER < $SNPs[0][1][0]);
+	    my @snp = shift @SNPs;
+	  }
 #	print STDERR "Buffered SNPs: " . @SNPs . "\n". " ($reads[0]{ pos } + $FILTER_BUFFER > $SNPs[0][1][0]); \n";
 #	print STDERR "---------------------------------\n";
 #	  exit;
-
-	#scrub all the reads that are far enough away..
-	while ( @reads > 0 && $reads[0]{ pos } + $FILTER_BUFFER < $pos + $i ) {
-	  my $read = shift @reads;
-
-	  scrub( $read, \@SNPs);
-	  print_sam( $read );
-	}
+	  
+	  #scrub all the reads that are far enough away..
+	  while ( @reads > 0 && $reads[0]{ pos } + $FILTER_BUFFER < $pos + $i ) {
+	    my $read = shift @reads;
+	    
+	    scrub( $read, \@SNPs);
+	    print_sam( $read );
+	  }
 	  
 #	print "Post-removal nr of reads: " . @reads ."\n";
-
+	  
+	}
+	
       }
-
+    }
+    $current_pos = $pos;
+    
+    
+#  print "pos: $current_pos, buffered reads: " . @reads . "\n";
+    
+    
+    my $hlen = length($csfasta);
+    if ( 1 &&  $cigar =~ /[IDNP]/) {
+      my $t_cigar = $cigar;
+      my $padding = 2;
+      $t_cigar =~ s/(\d+)[ID]/ {$padding += $1}/ge;
+      $hlen += $padding;
+    }
+    
+    my $gseq = substr($gcsfasta, $pos - 1, $hlen);
+    # for some odd reason, I cannot be arsed to figure out right now...
+#  $gseq = substr($gseq, 0, length($csfasta)) if ( length( $gseq) > length($csfasta));
+    
+    ($csfasta, $gseq)  = patch_alignment($csfasta, $gseq, $cigar);
+    
+    
+    my ($singles, $doubles, $a) =  align($csfasta, $gseq, $flags & 0x0010);
+    
+    $$entry{singles}  = $singles;
+    $$entry{doubles}  = $doubles;
+    $$entry{a}        = $a;
+    
+    push @reads, $entry;
+#  print "$csfasta\n";
+    
+    my @gcsf = split("", $gseq);
+    my @csf = split("", $csfasta);
+    for(my $i = 0; $i<@csf;$i++) {
+      
+      $cs_splits[$i]{ ref      } = $gcsf[ $i ];
+      $cs_splits[$i]{ pos      } = $pos  + $i;
+      $cs_splits[$i]{ total    }++;
+      $cs_splits[$i]{ $csf[$i] }++;
+      
     }
   }
-  $current_pos = $pos;
-
-  
-#  print "pos: $current_pos, buffered reads: " . @reads . "\n";
-
-
-  my $hlen = length($csfasta);
-  if ( 1 &&  $cigar =~ /[IDNP]/) {
-    my $t_cigar = $cigar;
-    my $padding = 2;
-    $t_cigar =~ s/(\d+)[ID]/ {$padding += $1}/ge;
-    $hlen += $padding;
-  }
-
-  my $gseq = substr($gcsfasta, $pos - 1, $hlen);
-  # for some odd reason, I cannot be arsed to figure out right now...
-#  $gseq = substr($gseq, 0, length($csfasta)) if ( length( $gseq) > length($csfasta));
-
-  ($csfasta, $gseq)  = patch_alignment($csfasta, $gseq, $cigar);
-
-
-  my ($singles, $doubles, $a) =  align($csfasta, $gseq, $flags & 0x0010);
-   
-  $$entry{singles}  = $singles;
-  $$entry{doubles}  = $doubles;
-  $$entry{a}        = $a;
-
-  push @reads, $entry;
-#  print "$csfasta\n";
-
-  my @gcsf = split("", $gseq);
-  my @csf = split("", $csfasta);
-  for(my $i = 0; $i<@csf;$i++) {
-
-    $cs_splits[$i]{ ref      } = $gcsf[ $i ];
-    $cs_splits[$i]{ pos      } = $pos  + $i;
-    $cs_splits[$i]{ total    }++;
-    $cs_splits[$i]{ $csf[$i] }++;
-
-  }
-}
 
 
 # empty the reads buffer..
-while ( @reads ) {
-  my $read = shift @reads;
-
-  scrub( $read, \@SNPs);
-  print_sam( $read );
-  
+  while ( @reads ) {
+    my $read = shift @reads;
+    
+    scrub( $read, \@SNPs);
+    print_sam( $read );
+    
+  }
 }
 
-$t2->stop();
-print STDERR "program run time: " . $t2->report() . "\n";
-
-print STDERR "Scrubbing stats: single: $s, double+: $d, ends: $e, Pre-bailes: $b_pre, Post-bailes: $b_post\n";
-
-
-print STDERR "Buffered SNPs: " . @SNPs . "\n";
 
 
 
@@ -685,11 +703,11 @@ sub csfasta2fasta {
 # Read the fasta files and puts entries into a nice array
 #
 sub readfasta {
-  my ($file) = @_;
+  my ($file, $region) = @_;
 
   my $sequence;
   my $header;
-  open (my $f, $file) || die "Could not open $file:$1\n";
+  open (my $f, "samtools faidx $file $region |" ) || die "Could not open $file:$1\n";
   while (<$f>) {
     chomp;
     if (/^\>/) {
@@ -703,5 +721,5 @@ sub readfasta {
   }
   
 
-  return ($header, $sequence);
+  return (fasta2csfasta($sequence));
 }
