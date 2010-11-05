@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 # 
-# 
+# SOLiD-scrubber: Removes ambiguous mappings around SNPs for cleaner SNP calling.
 # 
 # 
 # Kim Brugger (Oct 2010), contact: brugger@brugger.dk
@@ -8,40 +8,44 @@
 use strict;
 use Data::Dumper;
 use warnings;
+use Getopt::Std;
 
-my $bam_file = shift || die "USAGE: solid-scrubber.pl bam-file reference region\n";
+my %opts;
+getopts('b:d:f:F:hs:r:', \%opts);
+my $bam_file = $opts{'b'} || Usage();
+my $chr_file = $opts{'f'} || Usage();
 
-my $chr_file = shift || "/ifs/data/refs/hg18/hg18.fasta";
 die "'$chr_file' does not exist\n" 
     if ( ! -e $chr_file );
-print STDERR "index does not exist for '$chr_file', please create one with samtools faidx\n"
+die "index does not exist for '$chr_file', please create one with samtools faidx\n"
     if (! -e "$chr_file.fai");
+
+my $samtools    = find_program('samtools');
 
 my $gcsfasta;
 my $CS_PRE_POS     = 1;
 my $CS_PRE_PRE_POS = 0;
-my $MIN_SPLIT      = 60; # should be something like 10-15...
-my $MIN_DEPTH      = 15; # I guess something between 7 and 20 should be goo
+my $MIN_SPLIT      = $opts{'s'} || 60; # should be something like 10-15...
+my $MIN_DEPTH      = $opts{'d'} || 15; # I guess something between 7 and 20 should be goo
 #this should be > readlength + the maximum number of expected inserts. 2xreadlength should do the trick
-my $FILTER_BUFFER  = 100;
+my $FILTER_BUFFER  = $opts{'F'} || 100;
 
 my $current_pos = undef;
-
 my $good_trans = legal_transitions();
 
-print `./samtools view -H $bam_file`;
+print `$samtools view -H $bam_file`;
 my ( $s, $d, $e, $b_pre, $b_post) = (0,0,0, 0, 0);
 
-my $region = "chrX:2,789,549-2,789,590";
-$region = "chrX:2,789,818-2,789,859";
-$region = "chrX:2,789,818-3,789,818";
-$region = "chrX";
-$region = shift;
+my $region = $opts{'r'};
+#my $region = "chrX:2,789,549-2,789,590";
+#$region = "chrX:2,789,818-2,789,859";
+#$region = "chrX:2,789,818-3,789,818";
+#$region = "chrX";
 
 if ( ! $region ) {
   # loop through the regions one by one, but only keep the most current chr in memory.
   
-  open(my $spipe, "./samtools view -H $chr_file | ") || die "Could not open '$chr_file': $!\n";
+  open(my $spipe, "$samtools view -H $chr_file | ") || die "Could not open '$chr_file': $!\n";
   while(<$spipe>) {
     next if ( ! /\@SQ/);
     foreach my $field ( split("\t") ) {
@@ -73,7 +77,7 @@ sub analyse {
 
   my (@cs_splits, @ref_ids, @reads, @SNPs);
 
-  open (my $bam, "./samtools view $bam_file $region | ") || die "Could not open 'stream': $!\n";
+  open (my $bam, "$samtools view $bam_file $region | ") || die "Could not open 'stream': $!\n";
   while(<$bam>) {
 
     chomp;
@@ -707,7 +711,7 @@ sub readfasta {
 
   my $sequence;
   my $header;
-  open (my $f, "samtools faidx $file $region |" ) || die "Could not open $file:$1\n";
+  open (my $f, "$samtools faidx $file $region |" ) || die "Could not open $file:$1\n";
   while (<$f>) {
     chomp;
     if (/^\>/) {
@@ -722,4 +726,42 @@ sub readfasta {
   
 
   return (fasta2csfasta($sequence));
+}
+
+
+
+
+# 
+# 
+# 
+# Kim Brugger (13 Jul 2010)
+sub find_program {
+  my ($program) = @_;
+  
+  my $username = scalar getpwuid $<;
+  
+  my @paths = ("/home/$username/bin/",
+	       "./",
+	       "/usr/local/bin");
+  
+  foreach my $path ( @paths ) {
+    return "$path/$program" if ( -e "$path/$program" );
+  }
+
+  my $location = `which $program`;
+  chomp( $location);
+  
+  return $location if ( $location );
+  
+  die "Could not find '$program'\n";
+}
+
+
+# 
+# 
+# 
+# Kim Brugger (05 Nov 2010)
+sub Usage {
+  $0 =~ s/.*\///;
+  die "USAGE: $0 -b<am file> -f<asta file> -d[ min depth, default=15] -s[ min Split, default=60] -F[ilter buffer, default=100]\n";
 }
