@@ -29,8 +29,13 @@ my $MIN_SPLIT      = $opts{'s'} || 60; # should probably be something like 10-15
 my $MIN_DEPTH      = $opts{'d'} || 15; # I guess something between 7 and 20 should be goo
 #this should be > readlength + the maximum number of expected inserts. 2xreadlength should do the trick
 my $FILTER_BUFFER  = $opts{'B'} || 100;
-my $set_unmapped   = $opts{'U'} || 0;
+my $set_unmapped   = $opts{'U'};
 my $set_mapq_score = $opts{'M'};
+
+if ( ! $set_unmapped && ! defined $set_mapq_score) {
+  print STDERR  "Please use either the -M or the -U flag otherwise the reads will not be changed!!!\n";
+  Usage();
+}
 
 
 my $current_pos = undef;
@@ -150,7 +155,6 @@ sub analyse {
 	my ($right) = (0);
 	map { $right += $cs_splits[0]{ $_ } if ( $cs_splits[0]{ $_ } && $cs_splits[0]{ref} eq $_)} ( 'O','1','2','3');
 	
-	
 	push @ref_ids, [$cs_splits[0]{pos}, $right*100/$cs_splits[0]{total}, $cs_splits[0]{total}];
 	shift @cs_splits;
 	
@@ -160,8 +164,9 @@ sub analyse {
 	     $ref_ids[ $CS_PRE_POS ][ 1 ]     < $MIN_SPLIT && 
 	     $ref_ids[ $CS_PRE_POS ][ 2 ]     > $MIN_DEPTH     &&
 	     $ref_ids[ $CS_PRE_PRE_POS ][ 2 ] > $MIN_DEPTH ) {
-	  
-	  print STDERR "SNP at pos $$entry{ pos } + $i \n";
+
+
+	  print STDERR "SNP at pos $region:".($current_pos  + $i)." (depth: $ref_ids[ $CS_PRE_POS ][ 2 ]) splits: ($ref_ids[ $CS_PRE_PRE_POS ][1], $ref_ids[ $CS_PRE_POS ][1])\n";
 	  push @SNPs, [$ref_ids[ $CS_PRE_PRE_POS ], $ref_ids[ $CS_PRE_POS ]];
 	}
 	
@@ -224,12 +229,20 @@ sub analyse {
     
     my @gcsf = split("", $gseq);
     my @csf = split("", $csfasta);
+    my $gaps = 0;
     for(my $i = 0; $i<@csf;$i++) {
       
-      $cs_splits[$i]{ ref      } = $gcsf[ $i ];
-      $cs_splits[$i]{ pos      } = $pos  + $i;
-      $cs_splits[$i]{ total    }++;
-      $cs_splits[$i]{ $csf[$i] }++;
+      # there is an insert in the reference, so this number needs to 
+      # be subtracted to get the real genome position.
+      if ($gcsf[ $i ] eq "-") {
+	$gaps++;
+	next;
+      }
+
+      $cs_splits[$i - $gaps]{ ref      } = $gcsf[ $i ];
+      $cs_splits[$i - $gaps]{ pos      } = $pos  + $i;
+      $cs_splits[$i - $gaps]{ total    }++;
+      $cs_splits[$i - $gaps]{ $csf[$i] }++;
       
     }
   }
@@ -305,7 +318,7 @@ sub scrub {
 	  ($single - 1 + $$read{pos} <= $snp_end &&
 	   $single + 1 + $$read{pos} >= $snp_end)) {
 
-#	print "$$read{id} -- $$read{cigar}\n$$read{a}";
+#	print STDERR "$$read{id} -- $$read{cigar}\n$$read{a}";
 	
 	
 	$$read{flags} -= 4 if ( $set_unmapped );
@@ -328,7 +341,7 @@ sub scrub {
 	  ($$double[0] + $$read{pos} <= $snp_end &&
 	   $$double[1] + $$read{pos} >= $snp_end)) {
 	
-#	print "$$read{id} -- $$read{cigar}\n$$read{a}";
+#	print STDERR "$$read{id} -- $$read{cigar}\n$$read{a}";
 #	print $$read{a};
 
 	$$read{flags} -= 4 if ( $set_unmapped );
@@ -342,7 +355,7 @@ sub scrub {
 	  
     if ( $$read{pos} == $snp_end || $$read{end}  == $snp_end ) {
 	    
-#      print "$$read{id} -- $$read{cigar}\n$$read{a}";
+#      print STDERR "$$read{id} -- $$read{cigar}\n$$read{a}";
 #      print $$read{a};
       $$read{flags} -= 4 if ( $set_unmapped );
       $$read{mapq}   = $set_mapq_score if ( defined $set_mapq_score);
@@ -416,6 +429,7 @@ sub align {
   if ( 1 ) {
     my $align = join("", @align);
     $align =~ tr/01/ \|/;
+#    print STDERR "$s1\n$align\n$s2\n\n" if ( @singles || @long);
     return( \@singles, \@long, "$s1\n$align\n$s2\n\n");
   }
 
@@ -787,5 +801,7 @@ sub find_program {
 # Kim Brugger (05 Nov 2010)
 sub Usage {
   $0 =~ s/.*\///;
-  die "USAGE: $0 -b<am file> -R<eference genome (fasta)> -d[ min depth, default=15] -s[ min Split, default=60] -B[uffer, default=100] -M[et mapq score for offending reads] -U[n set mapped flag for offending reads]\n";
+  die "USAGE: $0 -b<am file> -R<eference genome (fasta)> -d[ min depth, default=15] -s[ min Split, default=60] -B[uffer, default=100] -M[ set mapq score for offending reads] -U[n set mapped flag for offending reads]\n";
+
+  # test::::  10:74879852
 }
