@@ -11,9 +11,9 @@ use warnings;
 use Getopt::Std;
 
 my %opts;
-getopts('b:d:f:F:hs:r:', \%opts);
+getopts('b:d:R:B:hs:r:UM:', \%opts);
 my $bam_file = $opts{'b'} || Usage();
-my $chr_file = $opts{'f'} || Usage();
+my $chr_file = $opts{'R'} || Usage();
 
 die "'$chr_file' does not exist\n" 
     if ( ! -e $chr_file );
@@ -25,10 +25,13 @@ my $samtools    = find_program('samtools');
 my $gcsfasta;
 my $CS_PRE_POS     = 1;
 my $CS_PRE_PRE_POS = 0;
-my $MIN_SPLIT      = $opts{'s'} || 60; # should be something like 10-15...
+my $MIN_SPLIT      = $opts{'s'} || 60; # should probably be something like 10-15...
 my $MIN_DEPTH      = $opts{'d'} || 15; # I guess something between 7 and 20 should be goo
 #this should be > readlength + the maximum number of expected inserts. 2xreadlength should do the trick
-my $FILTER_BUFFER  = $opts{'F'} || 100;
+my $FILTER_BUFFER  = $opts{'B'} || 100;
+my $set_unmapped   = $opts{'U'} || 0;
+my $set_mapq_score = $opts{'M'};
+
 
 my $current_pos = undef;
 my $good_trans = legal_transitions();
@@ -57,12 +60,13 @@ if ( ! $region ) {
   }
 }
 else {
-  if ($region =~ /^(\w):\d+/) {
-    $gcsfasta = readfasta( $chr_file );
-    analyse($1)
+  $region =~ s/,//g;
+  if ($region =~ /^(\w+):\d+-\d+/) {
+    $gcsfasta = readfasta( $chr_file, $1 );
+    analyse($region)
   }
   else {
-    $gcsfasta = readfasta( $chr_file );
+    $gcsfasta = readfasta( $chr_file, $region );
     analyse($region)
   }
 }
@@ -93,6 +97,12 @@ sub analyse {
 		  mapq   => $mapq,
 		  end    => $pos + length($sequence) - 1};
     
+
+    if ($flags & 0x0004 ) {
+      push @reads, $entry;
+      next;
+    }
+
     my $csfasta = $opts[0];
     
     if ( $csfasta !~ /CS:Z:/) {
@@ -105,12 +115,21 @@ sub analyse {
     }
     
     $csfasta =~ s/CS:Z://;
-    $csfasta  = substr($csfasta, 2);
-    $csfasta =~ tr/0/O/;
-    if ($flags & 0x0010 ) {
-      $csfasta = reverse( $csfasta);
-    }
+
+    my $BWA = 1;
     
+    if ( $BWA ) { 
+      $csfasta  = substr($csfasta, 3);
+      $csfasta =~ tr/0/O/;
+    }
+    else {
+      $csfasta  = substr($csfasta, 2);
+      $csfasta =~ tr/0/O/;
+      if ($flags & 0x0010 ) {
+	$csfasta = reverse( $csfasta);
+      }
+    }
+      
     if ( $current_pos && $current_pos != $pos )  {
       
       
@@ -127,13 +146,8 @@ sub analyse {
 	
 	next if (! $cs_splits[0]{total} || $cs_splits[0]{total} == 0);
 	
-	next if ( $cs_splits[0]{total} < $MIN_DEPTH);
 	
 	my ($right) = (0);
-#      foreach my $colour ( 'O','1','2','3' ) {
-#	$right += $cs_splits[0]{ $colour } if ( $cs_splits[0]{ $colour } && $cs_splits[0]{ref} eq $colour);
-#      }
-	
 	map { $right += $cs_splits[0]{ $_ } if ( $cs_splits[0]{ $_ } && $cs_splits[0]{ref} eq $_)} ( 'O','1','2','3');
 	
 	
@@ -143,7 +157,9 @@ sub analyse {
 	if ( @ref_ids == 2 && 
 	     $ref_ids[ $CS_PRE_PRE_POS ] && $ref_ids[ $CS_PRE_POS ]  &&
 	     $ref_ids[ $CS_PRE_PRE_POS ][ 1 ] < $MIN_SPLIT && 
-	     $ref_ids[ $CS_PRE_POS ][ 1 ]     < $MIN_SPLIT ) {
+	     $ref_ids[ $CS_PRE_POS ][ 1 ]     < $MIN_SPLIT && 
+	     $ref_ids[ $CS_PRE_POS ][ 2 ]     > $MIN_DEPTH     &&
+	     $ref_ids[ $CS_PRE_PRE_POS ][ 2 ] > $MIN_DEPTH ) {
 	  
 	  print STDERR "SNP at pos $$entry{ pos } + $i \n";
 	  push @SNPs, [$ref_ids[ $CS_PRE_PRE_POS ], $ref_ids[ $CS_PRE_POS ]];
@@ -291,8 +307,9 @@ sub scrub {
 
 #	print "$$read{id} -- $$read{cigar}\n$$read{a}";
 	
-	$$read{flags} -= 4;
-	$$read{mapq}   = 2;	
+	
+	$$read{flags} -= 4 if ( $set_unmapped );
+	$$read{mapq}   = $set_mapq_score if ( defined $set_mapq_score);
 	$s++;
 	return;
       }
@@ -314,8 +331,10 @@ sub scrub {
 #	print "$$read{id} -- $$read{cigar}\n$$read{a}";
 #	print $$read{a};
 
-	$$read{flags} -= 4;
-	$$read{mapq}   = 2;		
+	$$read{flags} -= 4 if ( $set_unmapped );
+	$$read{mapq}   = $set_mapq_score if ( defined $set_mapq_score);
+#	$$read{flags} -= 4;
+#	$$read{mapq}   = 2;		
 	$d++;
 	return;
       }
@@ -325,8 +344,11 @@ sub scrub {
 	    
 #      print "$$read{id} -- $$read{cigar}\n$$read{a}";
 #      print $$read{a};
-      $$read{flags} -= 4;
-      $$read{mapq}   = 2;		
+      $$read{flags} -= 4 if ( $set_unmapped );
+      $$read{mapq}   = $set_mapq_score if ( defined $set_mapq_score);
+
+#      $$read{flags} -= 4;
+#      $$read{mapq}   = 2;		
       $e++;
       return;
     }
@@ -339,7 +361,7 @@ sub scrub {
 
 
 # 
-# 
+# probe vs genome
 # 
 # Kim Brugger (13 Oct 2010)
 sub align {
@@ -390,7 +412,8 @@ sub align {
     }
     
   }
-  if ( 0 ) {
+
+  if ( 1 ) {
     my $align = join("", @align);
     $align =~ tr/01/ \|/;
     return( \@singles, \@long, "$s1\n$align\n$s2\n\n");
@@ -707,10 +730,11 @@ sub csfasta2fasta {
 # Read the fasta files and puts entries into a nice array
 #
 sub readfasta {
-  my ($file, $region) = @_;
+  my ($file, $region) = @_;  
 
   my $sequence;
   my $header;
+  
   open (my $f, "$samtools faidx $file $region |" ) || die "Could not open $file:$1\n";
   while (<$f>) {
     chomp;
@@ -763,5 +787,5 @@ sub find_program {
 # Kim Brugger (05 Nov 2010)
 sub Usage {
   $0 =~ s/.*\///;
-  die "USAGE: $0 -b<am file> -f<asta file> -d[ min depth, default=15] -s[ min Split, default=60] -F[ilter buffer, default=100]\n";
+  die "USAGE: $0 -b<am file> -R<eference genome (fasta)> -d[ min depth, default=15] -s[ min Split, default=60] -B[uffer, default=100] -M[et mapq score for offending reads] -U[n set mapped flag for offending reads]\n";
 }
