@@ -66,7 +66,7 @@ if ( ! $region ) {
 }
 else {
   $region =~ s/,//g;
-  if ($region =~ /^(\w+):\d+-\d+/) {
+  if ($region =~ /^(\w+):\d+-\d+/ || $region =~ /^(\w+):\d+\z/ ) {
     $gcsfasta = readfasta( $chr_file, $1 );
     analyse($region)
   }
@@ -241,8 +241,10 @@ sub analyse {
 
       $cs_splits[$i - $gaps]{ ref      } = $gcsf[ $i ];
       $cs_splits[$i - $gaps]{ pos      } = $pos  + $i;
-      $cs_splits[$i - $gaps]{ total    }++;
       $cs_splits[$i - $gaps]{ $csf[$i] }++;
+      next if ($csf[ $i ] eq "-");
+      $cs_splits[$i - $gaps]{ total    }++;
+
       
     }
   }
@@ -595,7 +597,7 @@ sub patch_alignment {
   my @ref   = split("", $ref );
 
   my $ref_cigar = $cigar;
-  $ref_cigar =~ s/^\d+[HD]//;
+  $ref_cigar =~ s/^\d+[HDS]//;
 
   my (@cigar) = $ref_cigar =~ /(\d+\w)/g;
 
@@ -803,5 +805,6 @@ sub Usage {
   $0 =~ s/.*\///;
   die "USAGE: $0 -b<am file> -R<eference genome (fasta)> -d[ min depth, default=15] -s[ min Split, default=60] -B[uffer, default=100] -M[ set mapq score for offending reads] -U[n set mapped flag for offending reads]\n";
 
-  # test::::  10:74879852
+  # tests :::: odd SNP reporting:  10:74879852-74879852
+  # large indel: 10:111800742
 }
