@@ -11,7 +11,7 @@ use warnings;
 use Getopt::Std;
 
 my %opts;
-getopts('b:d:R:B:hs:r:UM:', \%opts);
+getopts('b:d:R:B:hs:r:UM:m:', \%opts);
 my $bam_file = $opts{'b'} || Usage();
 my $chr_file = $opts{'R'} || Usage();
 
@@ -31,6 +31,7 @@ my $MIN_DEPTH      = $opts{'d'} || 15; # I guess something between 7 and 20 shou
 my $FILTER_BUFFER  = $opts{'B'} || 100;
 my $set_unmapped   = $opts{'U'};
 my $set_mapq_score = $opts{'M'};
+my $min_mapq_score = $opts{'m'} || 0;
 
 if ( ! $set_unmapped && ! defined $set_mapq_score) {
   print STDERR  "Please use either the -M or the -U flag otherwise the reads will not be changed!!!\n";
@@ -107,6 +108,12 @@ sub analyse {
       push @reads, $entry;
       next;
     }
+
+    if ( $mapq <= $min_mapq_score ) {
+      push @reads, $entry;
+      next;
+    }
+
 
     my $csfasta = $opts[0];
     
